@@ -18,6 +18,13 @@ if not os.path.exists(savePath):
     os.makedirs(savePath)
 
 
+import cvxEDA
+def eda_stats(y):
+    Fs = fs_dict['EDA']
+    yn = (y - y.mean()) / y.std()
+    [r, p, t, l, d, e, obj] = cvxEDA.cvxEDA(yn, 1./Fs)
+    return [r, p, t, l, d, e, obj]
+
 class SubjectData:
 
     def __init__(self, main_path, subject_number):
@@ -74,6 +81,11 @@ def get_window_stats(data, label=-1):
 def get_net_accel(data):
     return (data['ACC_x'] ** 2 + data['ACC_y'] ** 2 + data['ACC_z'] ** 2).apply(lambda x: np.sqrt(x))
 
+def get_peak_freq(x):
+    f, Pxx = scisig.periodogram(x, fs=8)
+    psd_dict = {amp: freq for amp, freq in zip(Pxx, f)}
+    peak_freq = psd_dict[max(psd_dict.keys())]
+    return peak_freq
 
 # https://github.com/MITMediaLabAffectiveComputing/eda-explorer/blob/master/AccelerometerFeatureExtractionScript.py
 def filterSignalFIR(eda, cutoff=0.4, numtaps=64):
@@ -91,7 +103,7 @@ def compute_features(e4_data_dict, labels, norm_type=None):
     label_df = pd.DataFrame(labels, columns=['label'])
 
     # Filter EDA
-    eda_df['EDA'] = butter_lowpass_filter(eda_df['EDA'], 1.0, 8, 6)
+    eda_df['EDA'] = butter_lowpass_filter(eda_df['EDA'], 1.0, fs_dict['EDA'], 6)
 
     # Filter ACM
     for _ in acc_df.columns:
@@ -110,6 +122,12 @@ def compute_features(e4_data_dict, labels, norm_type=None):
     temp_df.index = pd.to_datetime(temp_df.index, unit='s')
     acc_df.index = pd.to_datetime(acc_df.index, unit='s')
     label_df.index = pd.to_datetime(label_df.index, unit='s')
+    
+    # New EDA features
+    r, p, t, l, d, e, obj = eda_stats(eda_df['EDA'])
+    eda_df['EDA_phasic'] = r
+    eda_df['EDA_smna'] = p
+    eda_df['EDA_tonic'] = t
 
     # Combined dataframe - not used yet
     df = eda_df.join(bvp_df, how='outer')
@@ -148,8 +166,12 @@ def get_samples(data, n_windows, label):
         w = data[window_len * i: window_len * (i + 1)]
 
         # Add/Calc rms acc
-        w['net_acc'] = get_net_accel(w)
-
+        #w['net_acc'] = get_net_accel(w)
+        w = pd.concat([w, get_net_accel(w)])
+        w.columns = ['net_acc',      'ACC_x',      'ACC_y',      'ACC_z',        'BVP',
+                     'EDA', 'EDA_phasic',   'EDA_smna',  'EDA_tonic',       'TEMP',
+                     'label']
+        
         # Calculate stats for window
         wstats = get_window_stats(data=w, label=label)
 
@@ -168,6 +190,7 @@ def get_samples(data, n_windows, label):
         wdf = pd.DataFrame(x.values.flatten()).T
         wdf.columns = feat_names
         wdf = pd.concat([wdf, pd.DataFrame({'label': y}, index=[0])], axis=1)
+        wdf['BVP_peak_freq'] = get_peak_freq(w['BVP'].dropna())
         samples.append(wdf)
 
     return pd.concat(samples)
@@ -197,19 +220,21 @@ def make_patient_data(subject_id):
 
     #
     baseline_samples = get_samples(baseline, n_baseline_wdws, 1)
+    # Downsampling
+    #baseline_samples = baseline_samples[::2]
     stress_samples = get_samples(stress, n_stress_wdws, 2)
     amusement_samples = get_samples(amusement, n_amusement_wdws, 0)
 
     all_samples = pd.concat([baseline_samples, stress_samples, amusement_samples])
     all_samples = pd.concat([all_samples.drop('label', axis=1), pd.get_dummies(all_samples['label'])], axis=1)
     # Selected Features
-    all_samples = all_samples[['EDA_mean', 'EDA_std', 'EDA_min', 'EDA_max',
-                               'BVP_mean', 'BVP_std', 'BVP_min', 'BVP_max',
-                               'TEMP_mean', 'TEMP_std', 'TEMP_min', 'TEMP_max',
-                               'net_acc_mean', 'net_acc_std', 'net_acc_min', 'net_acc_max',
-                               0, 1, 2]]
+    #all_samples = all_samples[['EDA_mean', 'EDA_std', 'EDA_min', 'EDA_max',
+     #                          'BVP_mean', 'BVP_std', 'BVP_min', 'BVP_max',
+       #                        'TEMP_mean', 'TEMP_std', 'TEMP_min', 'TEMP_max',
+       #                        'net_acc_mean', 'net_acc_std', 'net_acc_min', 'net_acc_max',
+       #                        0, 1, 2]]
     # Save file as csv (for now)
-    all_samples.to_csv(f'{savePath}/S{subject_id}_feats.csv')
+    all_samples.to_csv(f'{savePath}/S{subject_id}_feats_3.csv')
 
     # Does this save any space?
     subject = None
@@ -218,7 +243,7 @@ def make_patient_data(subject_id):
 def combine_files(subjects):
     df_list = []
     for s in subjects:
-        df = pd.read_csv(f'data/S{s}_feats.csv', index_col=0)
+        df = pd.read_csv(f'data/S{s}_feats_3.csv', index_col=0)
         df['subject'] = s
         df_list.append(df)
 
@@ -229,7 +254,7 @@ def combine_files(subjects):
 
     df.reset_index(drop=True, inplace=True)
 
-    df.to_csv('may12_feats.csv')
+    df.to_csv('may12_feats3.csv')
 
     counts = df['label'].value_counts()
     print('Number of samples per class:')
