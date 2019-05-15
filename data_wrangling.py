@@ -5,6 +5,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import stats
 import scipy.signal as scisig
+import scipy.stats
+import cvxEDA
 
 # E4 (wrist) Sampling Frequencies
 fs_dict = {'ACC': 32, 'BVP': 64, 'EDA': 4, 'TEMP': 4, 'label': 700, 'Resp': 700}
@@ -13,13 +15,14 @@ label_dict = {'baseline': 1, 'stress': 2, 'amusement': 0}
 int_to_label = {1: 'baseline', 2: 'stress', 0: 'amusement'}
 feat_names = None
 savePath = 'data'
+subject_feature_path = '/subject_feats'
 
 if not os.path.exists(savePath):
     os.makedirs(savePath)
+if not os.path.exists(savePath + subject_feature_path):
+    os.makedirs(savePath + subject_feature_path)
 
-import cvxEDA
-
-
+# cvxEDA
 def eda_stats(y):
     Fs = fs_dict['EDA']
     yn = (y - y.mean()) / y.std()
@@ -71,6 +74,10 @@ def butter_lowpass_filter(data, cutoff, fs, order=5):
     y = scisig.lfilter(b, a, data)
     return y
 
+def get_slope(series):
+    linreg = scipy.stats.linregress(np.arange(len(series)), series )
+    slope = linreg[0]
+    return slope
 
 def get_window_stats(data, label=-1):
     mean_features = np.mean(data)
@@ -139,7 +146,7 @@ def compute_features(e4_data_dict, labels, norm_type=None):
     eda_df['EDA_phasic'] = r
     eda_df['EDA_smna'] = p
     eda_df['EDA_tonic'] = t
-
+        
     # Combined dataframe - not used yet
     df = eda_df.join(bvp_df, how='outer')
     df = df.join(temp_df, how='outer')
@@ -205,7 +212,10 @@ def get_samples(data, n_windows, label):
         wdf = pd.DataFrame(x.values.flatten()).T
         wdf.columns = feat_names
         wdf = pd.concat([wdf, pd.DataFrame({'label': y}, index=[0])], axis=1)
+        
+        # More feats
         wdf['BVP_peak_freq'] = get_peak_freq(w['BVP'].dropna())
+        wdf['TEMP_slope'] = get_slope(w['TEMP'].dropna())
         samples.append(wdf)
 
     return pd.concat(samples)
@@ -249,7 +259,7 @@ def make_patient_data(subject_id):
     #                        'net_acc_mean', 'net_acc_std', 'net_acc_min', 'net_acc_max',
     #                        0, 1, 2]]
     # Save file as csv (for now)
-    all_samples.to_csv(f'{savePath}/S{subject_id}_feats_4.csv')
+    all_samples.to_csv(f'{savePath}{subject_feature_path}/S{subject_id}_feats_4.csv')
 
     # Does this save any space?
     subject = None
@@ -258,7 +268,7 @@ def make_patient_data(subject_id):
 def combine_files(subjects):
     df_list = []
     for s in subjects:
-        df = pd.read_csv(f'data/S{s}_feats_4.csv', index_col=0)
+        df = pd.read_csv(f'{savePath}{subject_feature_path}/S{s}_feats_4.csv', index_col=0)
         df['subject'] = s
         df_list.append(df)
 
@@ -269,7 +279,7 @@ def combine_files(subjects):
 
     df.reset_index(drop=True, inplace=True)
 
-    df.to_csv('may14_feats4.csv')
+    df.to_csv(f'{savePath}/may14_feats4.csv')
 
     counts = df['label'].value_counts()
     print('Number of samples per class:')
